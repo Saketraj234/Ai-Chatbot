@@ -5,6 +5,8 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
 const Groq = require('groq-sdk');
+const cookieParser = require('cookie-parser');
+const { v4: uuidv4 } = require('uuid');
 const Chat = require('./models/Chat');
 
 const app = express();
@@ -17,8 +19,25 @@ const groq = new Groq({
 
 // Middleware
 app.use(cors());
+app.use(cookieParser());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Session middleware - generate sessionId if not present
+app.use((req, res, next) => {
+    if (!req.cookies.sessionId) {
+        const sessionId = uuidv4();
+        res.cookie('sessionId', sessionId, {
+            maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production'
+        });
+        req.sessionId = sessionId;
+    } else {
+        req.sessionId = req.cookies.sessionId;
+    }
+    next();
+});
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
@@ -28,6 +47,7 @@ mongoose.connect(process.env.MONGODB_URI)
 // AI Chatbot Route
 app.post('/api/chat', async (req, res) => {
     const { message } = req.body;
+    const sessionId = req.sessionId;
 
     if (!message) {
         return res.status(400).json({ error: 'Message is required' });
@@ -51,8 +71,9 @@ app.post('/api/chat', async (req, res) => {
 
         const botResponse = chatCompletion.choices[0]?.message?.content || "Maaf kijiye, main abhi response nahi de paa raha hoon.";
 
-        // Save to MongoDB
+        // Save to MongoDB with sessionId
         const newChat = new Chat({
+            sessionId,
             userMessage: message,
             botResponse: botResponse
         });
@@ -68,7 +89,7 @@ app.post('/api/chat', async (req, res) => {
 // Get Chat History
 app.get('/api/history', async (req, res) => {
     try {
-        const history = await Chat.find().sort({ timestamp: 1 });
+        const history = await Chat.find({ sessionId: req.sessionId }).sort({ timestamp: 1 });
         res.json(history);
     } catch (error) {
         res.status(500).json({ error: 'Error fetching history' });
